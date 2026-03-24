@@ -31,6 +31,7 @@ _schema: dict = {
         "policy_settings": {
             # --- LOCAL
             "local_ncores": int,
+            "local_poll_time": float,
             # --- HTCONDOR
             "htcondor_template": str,
             "htcondor_ncores": int,

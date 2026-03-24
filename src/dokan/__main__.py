@@ -631,13 +631,6 @@ def main() -> None:
         # > determine resources and dynamic job settings
         jobs_max: int = min(config["run"]["jobs_max_concurrent"], config["run"]["jobs_max_total"])
         console.print(f"# CPU cores: {cpu_count}")
-        if config["exe"]["policy"] == ExecutionPolicy.LOCAL:
-            local_ncores: int = jobs_max + 1
-        else:
-            local_ncores: int = cpu_count
-        # > CLI override
-        if args.local_cores is not None:
-            local_ncores = max(2, args.local_cores)
 
         nworkers: int = max(cpu_count, nactive_part) + 1
         config["run"]["jobs_batch_size"] = max(
@@ -664,7 +657,6 @@ def main() -> None:
             worker_scheduler_factory=WorkerSchedulerFactory(
                 # @todo properly set resources according to config
                 resources={
-                    "local_ncores": local_ncores,
                     "jobs_concurrent": jobs_max,
                     "DBTask": min(cpu_count, nactive_part) + 2,
                     "DBDispatch": 1,
