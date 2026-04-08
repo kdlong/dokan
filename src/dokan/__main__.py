@@ -658,6 +658,7 @@ def main() -> None:
                 # @todo properly set resources according to config
                 resources={
                     "jobs_concurrent": jobs_max,
+                    "local_ncores": min(cpu_count, nactive_part),
                     "DBTask": min(cpu_count, nactive_part) + 2,
                     "DBDispatch": 1,
                 },
