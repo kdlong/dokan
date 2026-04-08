@@ -231,6 +231,7 @@ class MergePart(DBMerge):
             # > collect histograms from all jobs
             pt.Ttot = 0.0
             pt.ntot = 0
+            seen_rel_paths: set[str] = set()
             for job in session.scalars(self.select_job):
                 if not job.rel_path:
                     continue  # @todo raise warning in logger?
@@ -241,7 +242,21 @@ class MergePart(DBMerge):
                 pt.Ttot += job.elapsed_time
                 pt.ntot += job.niter * job.ncall
                 job_path: Path = self._path / job.rel_path
+                # > multiple DB rows can share a batch directory (one row per seed);
+                # > only read output files once per directory to avoid N-fold duplication
+                if job.rel_path in seen_rel_paths:
+                    job.status = JobStatus.MERGED
+                    continue
+                seen_rel_paths.add(job.rel_path)
                 exe_data = ExeData(job_path)
+                if "output_files" not in exe_data:
+                    self._logger(
+                        session,
+                        self._logger_prefix
+                        + f"::run:  missing output data for {job.rel_path!r}, marking failed",
+                    )
+                    job.status = JobStatus.FAILED
+                    continue
                 if raw_path is not None:
                     (raw_path / job.rel_path).mkdir(parents=True, exist_ok=True)
 
