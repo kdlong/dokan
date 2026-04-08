@@ -5,91 +5,92 @@ implementation of the backend for ExecutionPolicy.LOCAL
 
 import os
 import subprocess
-import time
 from pathlib import Path
+
+import luigi
 
 from ...db._loglevel import LogLevel
 from .._executor import Executor
 
 
-class BatchLocalExec(Executor):
-    """Execute multiple NNLOJET seeds concurrently on the local machine.
+class LocalExec(Executor):
+    """Abstract base class for local execution
 
-    Spawns all seeds as independent subprocesses in parallel and polls for
-    completion, analogous to HTCondorExec and SlurmExec.  The entire batch
-    is managed by a *single* Luigi task, so only one worker thread is held
-    while the subprocesses run.  This avoids the previous design, where each
-    seed was a separate SingleLocalExec Luigi task that blocked its own worker
-    thread for the full job duration — which prevented true parallelism when
-    the number of concurrent seeds approached the Luigi worker count, and left
-    cores idle even when jobs_max_concurrent slots were available.
-
-    Configuration via ``policy_settings``:
-
-    local_ncores : int, optional
-        Number of OMP threads passed to each NNLOJET process (default: 1).
-    local_poll_time : float, optional
-        Polling interval in seconds while waiting for subprocesses to
-        finish (default: 30.0).
+    Attributes
+    ----------
+    local_ncores : int
+        number of cores to use on the local machine
     """
+
+    local_ncores: int = luigi.OptionalIntParameter(default=1)
+
+
+class BatchLocalExec(LocalExec):
+    """Wrapper task to batch-execute multiple local jobs"""
+
+    def requires(self):
+        return [self.clone(cls=SingleLocalExec, job_id=job_id) for job_id in self.exe_data["jobs"]]
+
+    def exe(self):
+        pass
+
+
+class SingleLocalExec(LocalExec):
+    """Task to execute a *single* job on the local machine
+
+    Attributes
+    ----------
+    job_id : int
+        id of the job defined in exe_data to execute
+    """
+
+    job_id: int = luigi.IntParameter()
 
     @property
     def resources(self):
-        return {"jobs_concurrent": self.njobs}
+        return {
+            "local_ncores": self.local_ncores,
+            "jobs_concurrent": 1,
+        }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.njobs: int = len(self.exe_data["jobs"])
-        self.ncores: int = self.exe_data["policy_settings"].get("local_ncores", 1)
-        self.poll_time: float = self.exe_data["policy_settings"].get("local_poll_time", 30.0)
+        # > use dict.get() -> int | None for non-throwing access?
+        self.seed: int = self.exe_data["jobs"][self.job_id]["seed"]
+        # > extra output & error files
+        self.file_out: Path = Path(self.path) / f"job.s{self.seed}.out"
+        self.file_err: Path = Path(self.path) / f"job.s{self.seed}.err"
+
+    def output(self):
+        return [luigi.LocalTarget(self.file_out)]
 
     def exe(self):
+        # > should never run since `run` is overridden
+        raise RuntimeError("SingleLocalExec::exe: should never be called")
+
+    def run(self):
+        self._logger(
+            f"SingleLocalExec::run: executing job {self.path} with seed {self.seed}", level=LogLevel.DEBUG
+        )
         job_env = os.environ.copy()
-        job_env["OMP_NUM_THREADS"] = str(self.ncores)
+        job_env["OMP_NUM_THREADS"] = f"{self.local_ncores}"
         job_env["OMP_STACKSIZE"] = "1024M"
 
-        procs: dict[int, subprocess.Popen] = {}
-        out_handles: dict[int, object] = {}
-        err_handles: dict[int, object] = {}
-
-        # Launch all seeds in parallel
-        for job_id, job_data in self.exe_data["jobs"].items():
-            seed: int = job_data["seed"]
-            file_out: Path = self.exe_data.path / f"job.s{seed}.out"
-            file_err: Path = self.exe_data.path / f"job.s{seed}.err"
-            out_handles[job_id] = open(file_out, "w")  # noqa: SIM115
-            err_handles[job_id] = open(file_err, "w")  # noqa: SIM115
-            procs[job_id] = subprocess.Popen(
+        with open(self.file_out, "w") as of, open(self.file_err, "w") as ef:
+            exec_out = subprocess.run(
                 [
                     self.exe_data["exe"],
                     "-run",
                     self.exe_data["input_files"][0],
                     "-iseed",
-                    str(seed),
+                    str(self.seed),
                 ],
                 env=job_env,
-                cwd=self.exe_data.path,
-                stdout=out_handles[job_id],
-                stderr=err_handles[job_id],
+                cwd=self.path,
+                stdout=of,
+                stderr=ef,
                 text=True,
             )
-            self._logger(
-                f"BatchLocalExec::exe: launched seed {seed} (pid={procs[job_id].pid})",
-                LogLevel.DEBUG,
-            )
-
-        # Poll until all subprocesses have finished
-        while any(proc.poll() is None for proc in procs.values()):
-            time.sleep(self.poll_time)
-
-        # Close file handles and report any failures
-        for job_id, proc in procs.items():
-            out_handles[job_id].close()
-            err_handles[job_id].close()
-            if proc.returncode != 0:
-                seed = self.exe_data["jobs"][job_id]["seed"]
-                self._logger(
-                    f"BatchLocalExec::exe: seed {seed} failed"
-                    f" (pid={proc.pid}, returncode={proc.returncode})",
-                    LogLevel.ERROR,
-                )
+            if exec_out.returncode != 0:
+                self._logger(f"SingleLocalExec failed to execute job {self.path}", level=LogLevel.ERROR)
+                return  # job will be flagged "failed"

@@ -126,6 +126,7 @@ class Config(UserDict):
     def __init__(self, *args, **kwargs):
         path = kwargs.pop("path", None)
         default_ok: bool = kwargs.pop("default_ok", True)
+        self.check_md5: bool = kwargs.pop("check_md5", True)
         super().__init__(*args, **kwargs)
         self.path: Path = None
         self.file_cfg: Path = None
@@ -150,15 +151,18 @@ class Config(UserDict):
                 return False
             if "seed_offset" in self.data["run"] and self.data["run"]["seed_offset"] < 0:
                 return False
-        if "warmup" in self.data:
-            if (
-                "min_increment_steps" in self.data["warmup"]
-                and self.data["warmup"]["min_increment_steps"] < 2
-            ):
-                return False
-        if "production" in self.data:
-            if "min_number" in self.data["production"] and self.data["production"]["min_number"] < 1:
-                return False
+        if (
+            "warmup" in self.data
+            and "min_increment_steps" in self.data["warmup"]
+            and self.data["warmup"]["min_increment_steps"] < 2
+        ):
+            return False
+        if (
+            "production" in self.data
+            and "min_number" in self.data["production"]
+            and self.data["production"]["min_number"] < 1
+        ):
+            return False
         return True
 
     def __setitem__(self, key, item) -> None:
@@ -195,12 +199,11 @@ class Config(UserDict):
             raise RuntimeError("Config: load encountered conflict with schema")
 
         # > Check whether the template file matches the md5 entry
-        if self.path is not None and self.data.get("run", {}).get("template") is not None:
+        if self.check_md5 and self.path is not None and self.data.get("run", {}).get("template") is not None:
             template_hash = RuncardTemplate(self.path / self.data["run"]["template"]).to_md5_hash()
             # > skip the check if we don't have a md5 yet
-            if (original_hash := self.data["run"].get("md5")) is not None:
-                if template_hash != original_hash:
-                    raise RuntimeError("Template has been manually modified, this is not allowed.")
+            if (original_hash := self.data["run"].get("md5")) is not None and template_hash != original_hash:
+                raise RuntimeError("Template has been manually modified, this is not allowed.")
 
     def fill_defaults(self):
         with open(_default_config) as tmp:
